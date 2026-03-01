@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <pthread.h>
+#include <signal.h>
 
 #include <AudioToolbox/AudioToolbox.h>
 #include <Accelerate/Accelerate.h>
@@ -23,6 +25,54 @@ const int num_blocks = sizeof(blocks) / sizeof(blocks[0]);
 
 AudioQueueRef queue;
 bool is_running = true;
+float sensitivity = 1.0f;
+int bar_width = 1;
+
+struct termios orig_termios;
+
+void set_raw_mode() {
+    tcgetattr(STDIN_FILENO, &orig_termios);
+    struct termios raw = orig_termios;
+    raw.c_lflag &= ~(ICANON | ECHO);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+}
+
+void restore_terminal() {
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+}
+
+void signal_handler(int sig) {
+    (void)sig;
+    is_running = false;
+    restore_terminal();
+    printf("\033[2J\033[H\033[?25h\n");
+    fflush(stdout);
+    _exit(0);
+}
+
+void *input_thread_func(void *arg) {
+    (void)arg;
+    char c;
+    while (is_running) {
+        if (read(STDIN_FILENO, &c, 1) == 1) {
+            if (c == '+' || c == '=') {
+                sensitivity = fminf(sensitivity + 0.2f, 5.0f);
+            } else if (c == '-') {
+                sensitivity = fmaxf(sensitivity - 0.2f, 0.1f);
+            } else if (c == ']') {
+                bar_width = (bar_width < 4) ? bar_width + 1 : 4;
+            } else if (c == '[') {
+                bar_width = (bar_width > 1) ? bar_width - 1 : 1;
+            } else if (c == 'q' || c == '\n') {
+                is_running = false;
+                break;
+            }
+        }
+    }
+    return NULL;
+}
 
 FFTSetup fft_setup;
 float *in_real;
@@ -50,21 +100,24 @@ void draw_visualizer() {
 
     if (cols <= 0 || rows <= 0) return;
 
-    float col_mags[cols];
-    for(int i = 0; i < cols; i++) col_mags[i] = 0.0f;
+    int num_bars = cols / bar_width;
+    if (num_bars <= 0) return;
+
+    float col_mags[num_bars];
+    for(int i = 0; i < num_bars; i++) col_mags[i] = 0.0f;
     float max_mag = 0.001f; // prevent div by zero
 
-    // sub-bass starts ~40Hz; end_bin restricts to primary audible range
+    // sub-bass starts ~40Hz, end_bin restricts to primary audible range
     int start_bin = 4;
-    int end_bin = 200; 
+    int end_bin = 200;
 
     float log_min = log10(start_bin);
     float log_max = log10(end_bin);
     float log_range = log_max - log_min;
 
-    for (int i = 0; i < cols; i++) {
-        float log_start = log_min + ((float)i / cols) * log_range;
-        float log_end   = log_min + ((float)(i + 1) / cols) * log_range;
+    for (int i = 0; i < num_bars; i++) {
+        float log_start = log_min + ((float)i / num_bars) * log_range;
+        float log_end   = log_min + ((float)(i + 1) / num_bars) * log_range;
 
         int bin_start = (int)pow(10, log_start);
         int bin_end   = (int)pow(10, log_end);
@@ -72,7 +125,7 @@ void draw_visualizer() {
         if(bin_start < start_bin) bin_start = start_bin;
 
         // ensure at least 1 bin per column so all columns get data
-        if(bin_end <= bin_start) bin_end = bin_start + 1; 
+        if(bin_end <= bin_start) bin_end = bin_start + 1;
 
         // clamp to prevent overreading the magnitudes array
         if(bin_end > FFT_HALF_SIZE) bin_end = FFT_HALF_SIZE;
@@ -81,20 +134,20 @@ void draw_visualizer() {
         int count = 0;
 
         for(int j = bin_start; j < bin_end && j < FFT_HALF_SIZE; j++) {
-             sum += magnitudes[j];
-             count++;
+            sum += magnitudes[j];
+            count++;
         }
 
         col_mags[i] = (count > 0) ? (sum / count) : 0.0f;
 
-        // soft noise gate: zero out very quiet bins
+        // soft noise gate, zero out very quiet bins
         if (col_mags[i] < 0.0008f) {
             col_mags[i] = 0.0f;
         }
 
         // boost higher frequencies slightly since they tend to have lower amplitude
-        float boost_factor = 1.0f + ((float)i / cols) * 3.0f; 
-        float volume_dampener = 1.5f; 
+        float boost_factor = 1.0f + ((float)i / num_bars) * 3.0f;
+        float volume_dampener = 1.5f;
 
         col_mags[i] *= (boost_factor * volume_dampener);
 
@@ -108,61 +161,80 @@ void draw_visualizer() {
     if (max_mag < prev_max_mag * 0.95f) {
         max_mag = prev_max_mag * 0.95f;
     }
-    
+
     // hard floor so silence stays flat at row 0
-    float absolute_minimum_mag = 0.15f; 
+    float absolute_minimum_mag = 0.15f;
     if (max_mag < absolute_minimum_mag) {
         max_mag = absolute_minimum_mag;
     }
 
     prev_max_mag = max_mag;
 
-    float smoothed_mags[cols];
-    for (int i = 0; i < cols; i++) smoothed_mags[i] = col_mags[i];
-    
-    for (int i = 0; i < cols; i++) {
+    float smoothed_mags[num_bars];
+    for (int i = 0; i < num_bars; i++) smoothed_mags[i] = col_mags[i];
+
+    for (int i = 0; i < num_bars; i++) {
         float val = col_mags[i];
         if (i > 0) val = val * 0.4f + col_mags[i-1] * 0.3f;
-        if (i < cols - 1) val = val + col_mags[i+1] * 0.3f;
+        if (i < num_bars - 1) val = val + col_mags[i+1] * 0.3f;
         smoothed_mags[i] = val;
     }
 
-    // temporal EMA: 65% new frame, 35% old — responsive but smooth
+    // temporal EMA: 65% new frame, 35% old, responsive but smooth
     static float temporal_mags[2048] = {0};
-    for (int i = 0; i < cols && i < 2048; i++) {
+    for (int i = 0; i < num_bars && i < 2048; i++) {
         temporal_mags[i] = smoothed_mags[i] * 0.65f + temporal_mags[i] * 0.35f;
         smoothed_mags[i] = temporal_mags[i];
     }
 
     // move cursor to top-left without clearing to avoid flicker
     printf("\033[H");
-    
-    int empty_top_rows = 1;
 
-    for (int r = rows - empty_top_rows; r > 0; r--) {
-        for (int c = 0; c < cols; c++) {
-            float normalized = smoothed_mags[c] / max_mag; 
-            
+    int bar_rows = rows - 1; // bottom row reserved for status
+
+    for (int r = bar_rows; r > 0; r--) {
+        // t=0 at bottom (green), t=1 at top (red)
+        float t = (float)(r - 1) / bar_rows;
+        int R = (int)(t * 255);
+        int G = (int)((1.0f - t) * 200);
+        int B = 0;
+
+        for (int b = 0; b < num_bars; b++) {
+            float normalized = smoothed_mags[b] / max_mag;
+
             // gamma curve so the visualizer feels taller and fuller
-            normalized = powf(normalized, 0.7f); 
+            normalized = powf(normalized, 0.7f) * sensitivity;
 
             if(normalized > 1.0f) normalized = 1.0f;
-            
-            float height_val = normalized * (rows - empty_top_rows);
-            
+
+            float height_val = normalized * bar_rows;
+
+            const char *block;
             if (height_val >= r) {
-                 printf("\033[36m%s\033[0m", blocks[8]);
+                block = blocks[8];
             } else if (height_val >= r - 1 && height_val > 0) {
-                 int block_idx = (int)((height_val - (r - 1)) * 8);
-                 if (block_idx < 0) block_idx = 0;
-                 if (block_idx > 8) block_idx = 8;
-                 printf("\033[36m%s\033[0m", blocks[block_idx]);
+                int block_idx = (int)((height_val - (r - 1)) * 8);
+                if (block_idx < 0) block_idx = 0;
+                if (block_idx > 8) block_idx = 8;
+                block = blocks[block_idx];
             } else {
-                 printf(" ");
+                block = NULL;
+            }
+
+            for (int w = 0; w < bar_width; w++) {
+                if (block == NULL) {
+                    printf(" ");
+                } else {
+                    printf("\033[38;2;%d;%d;%dm%s\033[0m", R, G, B, block);
+                }
             }
         }
         printf("\n");
     }
+
+    // status line at bottom — drawn last, cursor is already here after bar loop
+    printf("\033[90msensitivity: %.1f  bar width: %d  (+/- sens, [/] width, q quit)\033[0m\033[K",
+           sensitivity, bar_width);
     fflush(stdout);
 }
 
@@ -230,14 +302,22 @@ int main() {
     printf("\033[?25l");
     fflush(stdout);
 
-    printf("Starting Audio Capture. Press Enter to exit...\n");
+    set_raw_mode();
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    printf("Starting Audio Capture. Press +/- sensitivity, [/] width, q to quit.\n");
     AudioQueueStart(queue, NULL);
 
-    getchar();
+    pthread_t input_thread;
+    pthread_create(&input_thread, NULL, input_thread_func, NULL);
+    pthread_join(input_thread, NULL);
 
     is_running = false;
     AudioQueueStop(queue, true);
     AudioQueueDispose(queue, true);
+
+    restore_terminal();
 
     // show terminal cursor
     printf("\033[2J\033[H\033[?25h");
