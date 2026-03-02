@@ -16,4 +16,6 @@ Uses the AudioToolbox library and Accelerate. Quitting using <C-c> might make yo
 
 ### Todo
 
-Plans to make this configurable is probably the last thing I do for this project. The end goal for this is to learn some dsp, and then rewrite a bit of it using port audio so that I can use it in my guitar tuner project.
+Making this configurable is probably the last thing I do for this project. The end goal for this is to learn some dsp, and then rewrite a bit of it using port audio so that I can use it in my guitar tuner project.
+
+Making it a proper package would also be nice, I've never done that before
