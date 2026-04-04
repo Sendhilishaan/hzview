@@ -5,25 +5,16 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* =========================================================================
- * Unicode block characters
- * ========================================================================= */
 static const char *VBLOCKS[] = {
     " ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"
 };
 #define VBLOCK_FULL "█"
 
-/* =========================================================================
- * Color system — xterm-256 green → yellow → red, no init_color() needed.
- *
- * Uses the 6×6×6 color cube (indices 16-231): index = 16 + 36*r + 6*g + b.
- * Works on any terminal with COLORS >= 256 without touching init_color().
- *
- *   t = 0.0 (bottom)  →  green  (r=0, g=5, b=0)  →  palette index  46
- *   t = 0.5           →  yellow (r=5, g=5, b=0)  →  palette index 226
- *   t = 1.0 (top)     →  red    (r=5, g=0, b=0)  →  palette index 196
- * ========================================================================= */
-
+/* xterm-256 color gradient: uses the 6×6×6 cube (indices 16-231), index = 16 + 36*r + 6*g + b.
+ * No init_color() needed — works on any terminal with COLORS >= 256.
+ *   t=0.0 (bottom) → green  (r=0,g=5,b=0) → index  46
+ *   t=0.5          → yellow (r=5,g=5,b=0) → index 226
+ *   t=1.0 (top)    → red    (r=5,g=0,b=0) → index 196  */
 void viz_init(void) {
     int half = NUM_GRADIENT / 2;
     for (int i = 0; i < NUM_GRADIENT; i++) {
@@ -56,9 +47,6 @@ static inline int cpair(float t) {
     return lvl + 1;
 }
 
-/* =========================================================================
- * compute_display_mags
- * ========================================================================= */
 static float disp_mags[MAX_BARS];
 
 static void compute_display_mags(
@@ -117,9 +105,6 @@ static void compute_display_mags(
     }
 }
 
-/* =========================================================================
- * draw_bars
- * ========================================================================= */
 static void draw_bars(int bar_rows, int cols, int num_bars, int bw) {
     int offset = (cols - num_bars * bw) / 2;  /* center bar block horizontally */
 
@@ -152,9 +137,6 @@ static void draw_bars(int bar_rows, int cols, int num_bars, int bw) {
     }
 }
 
-/* =========================================================================
- * draw_status
- * ========================================================================= */
 static void draw_status(int row, const Config *cfg) {
     int    sp   = cfg->light_mode ? STATUS_PAIR_LIGHT : STATUS_PAIR_DARK;
     chtype bold = cfg->light_mode ? 0 : A_BOLD;
@@ -168,9 +150,6 @@ static void draw_status(int row, const Config *cfg) {
     attroff(COLOR_PAIR(sp) | bold);
 }
 
-/* =========================================================================
- * viz_render
- * ========================================================================= */
 static int prev_rows = 0, prev_cols = 0;
 
 void viz_render(AudioState *audio, Config *cfg) {

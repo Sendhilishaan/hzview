@@ -3,11 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* -------------------------------------------------------------------------
- * Audio callback — runs on the AudioQueue thread.
- * Only touches raw_samples / samples_ready under the mutex, then
- * immediately re-enqueues the buffer so the queue never starves.
- * ------------------------------------------------------------------------- */
+/* runs on the AudioQueue thread; re-enqueues the buffer immediately so the queue never starves */
 static void audio_callback(
     void *user_data,
     AudioQueueRef queue,
@@ -31,9 +27,6 @@ static void audio_callback(
     AudioQueueEnqueueBuffer(queue, buf, 0, NULL);
 }
 
-/* -------------------------------------------------------------------------
- * Public API
- * ------------------------------------------------------------------------- */
 void audio_init(AudioState *s) {
     memset(s, 0, sizeof(*s));
     pthread_mutex_init(&s->mutex, NULL);
